@@ -1,0 +1,21 @@
+
+{
+  "short_name": "Suraj Print",
+  "name": "Suraj Thermal Printer",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3000/3000101.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3000/3000101.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#4338ca",
+  "background_color": "#f9fafb"
+}

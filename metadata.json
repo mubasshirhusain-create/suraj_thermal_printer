@@ -1,0 +1,7 @@
+{
+  "name": "Suraj Thermal Printer",
+  "description": "A professional thermal printing utility for 58mm rolls, featuring header customization, clipboard pasting, and URL-to-print extraction.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
