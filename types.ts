@@ -7,6 +7,8 @@ export interface PrinterConfig {
   fontSize: 'sm' | 'base' | 'lg' | 'xl';
   textAlign: 'left' | 'center' | 'right';
   bold: boolean;
+  useBluetooth: boolean;
+  linkedPrinterName: string | null;
 }
 
 export enum ViewMode {
