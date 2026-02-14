@@ -1,9 +1,16 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Standard way to access API Key in Vite + Vercel
+const getApiKey = () => {
+  return process.env.API_KEY || "";
+};
+
+const ai = new GoogleGenAI({ apiKey: getApiKey() });
 
 export const extractContentFromUrl = async (url: string): Promise<string> => {
+  if (!getApiKey()) return "Error: API Key not found in Vercel settings.";
+  
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -20,6 +27,7 @@ export const extractContentFromUrl = async (url: string): Promise<string> => {
 };
 
 export const formatThermalText = async (text: string): Promise<string> => {
+    if (!getApiKey()) return text;
     try {
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
