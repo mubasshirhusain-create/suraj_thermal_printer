@@ -9,6 +9,18 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Suraj Thermal Printer</title>
     <link rel="manifest" href="manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            padding: {
+              'safe': 'env(safe-area-inset-bottom)'
+            }
+          }
+        }
+      }
+    </script>
     <style>
         @media print {
             body * {
@@ -21,7 +33,7 @@
                 position: absolute;
                 left: 0;
                 top: 0;
-                width: 58mm;
+                width: 58mm !important;
                 padding: 0 !important;
                 margin: 0 !important;
             }
@@ -36,13 +48,18 @@
             background: white;
             font-family: 'Courier New', Courier, monospace;
             box-sizing: border-box;
+            color: black !important;
         }
-        ::-webkit-scrollbar {
-            width: 4px;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 10px;
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        
+        /* Mobile optimization */
+        button:active { transform: scale(0.96); }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
         }
     </style>
 <script type="importmap">
@@ -59,7 +76,7 @@
 }
 </script>
 </head>
-<body class="bg-gray-100 min-h-screen overscroll-none">
+<body class="bg-slate-50 min-h-screen overscroll-none text-slate-900 font-sans">
     <div id="root"></div>
     <script type="module" src="./index.tsx"></script>
 </body>
