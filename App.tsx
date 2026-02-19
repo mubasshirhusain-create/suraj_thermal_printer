@@ -102,7 +102,8 @@ const App: React.FC = () => {
   const linkBluetooth = async () => {
     try {
       setIsConnecting(true);
-      if (!navigator.bluetooth) {
+      // Added type cast to bypass TypeScript error for missing bluetooth property on Navigator
+      if (!(navigator as any).bluetooth) {
         throw new Error("Bluetooth is not supported in this browser.");
       }
       const device = await (navigator as any).bluetooth.requestDevice({
