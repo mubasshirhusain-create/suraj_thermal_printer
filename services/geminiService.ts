@@ -1,12 +1,12 @@
-
 import { GoogleGenAI } from "@google/genai";
 
-// Safe API initialization
+// Safe API initialization following @google/genai coding guidelines
 const getAI = () => {
   try {
     const apiKey = process.env.API_KEY;
     if (!apiKey) return null;
-    return new GoogleGenAI({ apiKey });
+    // Always use named parameter for apiKey
+    return new GoogleGenAI({ apiKey: apiKey });
   } catch (e) {
     console.warn("Gemini API not available:", e);
     return null;
@@ -14,6 +14,7 @@ const getAI = () => {
 };
 
 export const extractContentFromUrl = async (url: string): Promise<string> => {
+  // Creating instance right before making an API call
   const ai = getAI();
   if (!ai) return "AI services temporarily unavailable. Please paste content manually.";
   
@@ -25,6 +26,7 @@ export const extractContentFromUrl = async (url: string): Promise<string> => {
         systemInstruction: "You are a professional text extraction tool. Return only the most relevant text, formatted cleanly for a narrow receipt.",
       }
     });
+    // .text is a property on GenerateContentResponse
     return response.text || "No content extracted.";
   } catch (error) {
     console.error("Gemini Error:", error);
@@ -33,6 +35,7 @@ export const extractContentFromUrl = async (url: string): Promise<string> => {
 };
 
 export const formatThermalText = async (text: string): Promise<string> => {
+  // Creating instance right before making an API call
   const ai = getAI();
   if (!ai) return text;
   
@@ -41,6 +44,7 @@ export const formatThermalText = async (text: string): Promise<string> => {
       model: 'gemini-3-flash-preview',
       contents: `Reformat this text into a clean 58mm thermal printer receipt: ${text}`,
     });
+    // .text is a property on GenerateContentResponse
     return response.text || text;
   } catch (error) {
     return text;
