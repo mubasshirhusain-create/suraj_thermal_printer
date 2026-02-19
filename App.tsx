@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Printer, 
@@ -21,7 +20,7 @@ import {
 import { PrinterConfig, ViewMode } from './types';
 import { extractContentFromUrl, formatThermalText } from './services/geminiService';
 
-// Common Thermal Printer UUIDs
+// Common Thermal Printer UUIDs for 58mm units
 const PRINTER_SERVICES = [
   '000018f0-0000-1000-8000-00805f9b34fb',
   '0000ff00-0000-1000-8000-00805f9b34fb',
@@ -113,8 +112,6 @@ const App: React.FC = () => {
   const linkBluetooth = async () => {
     try {
       setIsConnecting(true);
-      // Universal Discovery: many thermal printers don't advertise their specific service UUIDs.
-      // We accept all devices and then search for compatible services upon connection.
       const device = await (navigator as any).bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: PRINTER_SERVICES
@@ -127,7 +124,7 @@ const App: React.FC = () => {
       alert(`Linked to ${device.name || 'Printer'}`);
     } catch (error) {
       console.error("Bluetooth link error:", error);
-      alert("No device selected or Bluetooth unsupported on this browser.");
+      alert("Selection canceled or Bluetooth not available.");
     } finally {
       setIsConnecting(false);
     }
@@ -143,7 +140,6 @@ const App: React.FC = () => {
     try {
       let activeDevice = btDevice;
       
-      // If session lost, re-request device by name or just use prompt
       if (!activeDevice || !activeDevice.gatt?.connected) {
         activeDevice = await (navigator as any).bluetooth.requestDevice({
           filters: config.linkedPrinterName ? [{ name: config.linkedPrinterName }] : undefined,
@@ -153,59 +149,55 @@ const App: React.FC = () => {
         setBtDevice(activeDevice);
       }
 
-      if (!activeDevice) throw new Error("No printer device active.");
+      if (!activeDevice) throw new Error("No device active.");
 
       const server = await activeDevice.gatt?.connect();
-      console.log("GATT Server connected");
+      console.log("Connected to GATT Server");
 
-      // Robust service and characteristic discovery
       let characteristic: any = null;
       
-      for (const serviceUuid of PRINTER_SERVICES) {
-        try {
-          const service = await server?.getPrimaryService(serviceUuid);
-          if (service) {
-            for (const charUuid of PRINTER_CHARACTERISTICS) {
-              try {
-                characteristic = await service.getCharacteristic(charUuid);
-                if (characteristic) break;
-              } catch (e) { /* continue */ }
-            }
-          }
+      // Try discovery by known service UUIDs
+      const services = await server?.getPrimaryServices();
+      if (services) {
+        for (const service of services) {
+          const chars = await service.getCharacteristics();
+          // Find the first writable characteristic (printers usually have one)
+          characteristic = chars.find((c: any) => 
+            c.properties.write || c.properties.writeWithoutResponse
+          );
           if (characteristic) break;
-        } catch (e) { /* continue */ }
-      }
-
-      if (!characteristic) {
-        // Fallback: try to find ANY writeable characteristic
-        const services = await server?.getPrimaryServices();
-        if (services) {
-          for (const service of services) {
-            const characteristics = await service.getCharacteristics();
-            characteristic = characteristics.find((c: any) => c.properties.write || c.properties.writeWithoutResponse);
-            if (characteristic) break;
-          }
         }
       }
 
-      if (!characteristic) throw new Error("No writable characteristic found on this printer.");
+      if (!characteristic) throw new Error("Printer interface not found. Ensure it is a 58mm Bluetooth Thermal Printer.");
 
       const data = encodeEscPos(config);
-      // Send in MTU-safe chunks
-      const chunkSize = 20;
+      // Small chunks are CRITICAL for thermal printers (MTU is usually 20-23 bytes)
+      const chunkSize = 20; 
       for (let i = 0; i < data.length; i += chunkSize) {
         const chunk = data.slice(i, i + chunkSize);
-        if (characteristic.properties.writeWithoutResponse) {
-          await characteristic.writeValueWithoutResponse(chunk);
-        } else {
+        
+        try {
+          // Use writeWithoutResponse if available (faster and often preferred by printers)
+          if (characteristic.properties.writeWithoutResponse) {
+            await characteristic.writeValueWithoutResponse(chunk);
+          } else {
+            await characteristic.writeValue(chunk);
+          }
+        } catch (writeError) {
+          // Fallback if primary method fails
           await characteristic.writeValue(chunk);
         }
+
+        // Tiny delay between chunks helps avoid "GATT Operation Not Permitted" 
+        // which happens when the device's incoming buffer is full.
+        await new Promise(resolve => setTimeout(resolve, 35));
       }
       
-      alert("Print sent successfully!");
+      alert("Sent to printer!");
     } catch (e: any) {
-      console.error("Print error:", e);
-      alert(`Print Failed: ${e.message || "Unknown error"}. Ensure printer is paired and on.`);
+      console.error("Print logic error:", e);
+      alert(`Connection Error: ${e.message || "Unknown error"}. Try turning the printer off and on again.`);
     } finally {
       setLoading(false);
     }
@@ -296,9 +288,7 @@ const App: React.FC = () => {
                     try {
                       const text = await navigator.clipboard.readText();
                       if (text) setConfig(p => ({ ...p, content: text }));
-                    } catch (e) {
-                      console.error("Clipboard access failed:", e);
-                    }
+                    } catch (e) { console.error(e); }
                   }} className="p-2 bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 transition-colors">
                     <Clipboard className="w-4 h-4" />
                   </button>
@@ -307,11 +297,7 @@ const App: React.FC = () => {
                     try {
                       const formatted = await formatThermalText(config.content);
                       setConfig(p => ({ ...p, content: formatted })); 
-                    } catch (e) {
-                      console.error("Gemini format error:", e);
-                    } finally {
-                      setLoading(false); 
-                    }
+                    } catch (e) { console.error(e); } finally { setLoading(false); }
                   }} className="p-2 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200 transition-colors">
                     <Sparkles className="w-4 h-4" />
                   </button>
@@ -339,11 +325,7 @@ const App: React.FC = () => {
                     try {
                       const result = await extractContentFromUrl(url);
                       setConfig(p => ({ ...p, content: result })); 
-                    } catch (e) {
-                      console.error("Gemini extract error:", e);
-                    } finally {
-                      setLoading(false); 
-                    }
+                    } catch (e) { console.error(e); } finally { setLoading(false); }
                   }}
                   className="bg-indigo-700 text-white px-4 rounded-xl font-bold text-xs"
                 >
