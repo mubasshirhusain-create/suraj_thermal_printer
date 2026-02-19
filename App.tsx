@@ -21,14 +21,27 @@ import {
 import { PrinterConfig, ViewMode } from './types';
 import { extractContentFromUrl, formatThermalText } from './services/geminiService';
 
-// --- ESC/POS Helper for Bluetooth (58mm) ---
+// Common Thermal Printer UUIDs
+const PRINTER_SERVICES = [
+  '000018f0-0000-1000-8000-00805f9b34fb',
+  '0000ff00-0000-1000-8000-00805f9b34fb',
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+  '0000ae30-0000-1000-8000-00805f9b34fb'
+];
+
+const PRINTER_CHARACTERISTICS = [
+  '00002af1-0000-1000-8000-00805f9b34fb',
+  '0000ff01-0000-1000-8000-00805f9b34fb',
+  '49535343-8841-43f4-a8d4-ecbe34729bb3',
+  '0000ae01-0000-1000-8000-00805f9b34fb'
+];
+
 const encodeEscPos = (config: PrinterConfig): Uint8Array => {
   const encoder = new TextEncoder();
   const chunks: Uint8Array[] = [];
 
   chunks.push(new Uint8Array([0x1B, 0x40])); // Reset
 
-  // Header
   if (config.headerText) {
     chunks.push(new Uint8Array([0x1B, 0x61, 1])); // Center
     chunks.push(new Uint8Array([0x1B, 0x45, 0x01])); // Bold
@@ -36,18 +49,15 @@ const encodeEscPos = (config: PrinterConfig): Uint8Array => {
     chunks.push(new Uint8Array([0x1B, 0x45, 0x00])); // Normal
   }
 
-  // Content
   const alignMap = { left: 0, center: 1, right: 2 };
   chunks.push(new Uint8Array([0x1B, 0x61, alignMap[config.textAlign]]));
   const sizeMap = { sm: 0x00, base: 0x00, lg: 0x11, xl: 0x22 };
   chunks.push(new Uint8Array([0x1D, 0x21, sizeMap[config.fontSize]]));
   chunks.push(encoder.encode(config.content + "\n\n"));
 
-  // Fixed Footer Branding
   chunks.push(new Uint8Array([0x1B, 0x61, 1])); // Center
   chunks.push(new Uint8Array([0x1D, 0x21, 0x00])); // Normal size
   chunks.push(encoder.encode("\n--- Developed by ---\nMubasshir Husain\n\n\n\n"));
-  
   chunks.push(new Uint8Array([0x1D, 0x56, 0x00])); // Cut
 
   const totalLength = chunks.reduce((acc, curr) => acc + curr.length, 0);
@@ -83,7 +93,6 @@ const App: React.FC = () => {
   const [btDevice, setBtDevice] = useState<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load configuration and attempt auto-link
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
@@ -104,25 +113,28 @@ const App: React.FC = () => {
   const linkBluetooth = async () => {
     try {
       setIsConnecting(true);
-      // Basic 58mm Printer UUID or generic printer
+      // Universal Discovery: many thermal printers don't advertise their specific service UUIDs.
+      // We accept all devices and then search for compatible services upon connection.
       const device = await (navigator as any).bluetooth.requestDevice({
-        filters: [{ services: ['000018f0-0000-1000-8000-00805f9b34fb'] }],
-        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb']
+        acceptAllDevices: true,
+        optionalServices: PRINTER_SERVICES
       });
       
       setBtDevice(device);
-      const newConfig = { ...config, linkedPrinterName: device.name, useBluetooth: true };
+      const newConfig = { ...config, linkedPrinterName: device.name || 'Unknown Printer', useBluetooth: true };
       setConfig(newConfig);
       handleSave(newConfig);
+      alert(`Linked to ${device.name || 'Printer'}`);
     } catch (error) {
-      alert("Bluetooth connection failed. Ensure your printer is on.");
+      console.error("Bluetooth link error:", error);
+      alert("No device selected or Bluetooth unsupported on this browser.");
     } finally {
       setIsConnecting(false);
     }
   };
 
   const handleBluetoothPrint = async () => {
-    if (!config.linkedPrinterName) {
+    if (!btDevice && !config.linkedPrinterName) {
       linkBluetooth();
       return;
     }
@@ -130,28 +142,70 @@ const App: React.FC = () => {
     setLoading(true);
     try {
       let activeDevice = btDevice;
-      if (!activeDevice) {
-        // Try to re-request the specific known device
+      
+      // If session lost, re-request device by name or just use prompt
+      if (!activeDevice || !activeDevice.gatt?.connected) {
         activeDevice = await (navigator as any).bluetooth.requestDevice({
-          filters: [{ name: config.linkedPrinterName }],
-          optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb']
+          filters: config.linkedPrinterName ? [{ name: config.linkedPrinterName }] : undefined,
+          acceptAllDevices: !config.linkedPrinterName,
+          optionalServices: PRINTER_SERVICES
         });
         setBtDevice(activeDevice);
       }
 
+      if (!activeDevice) throw new Error("No printer device active.");
+
       const server = await activeDevice.gatt?.connect();
-      const service = await server?.getPrimaryService('000018f0-0000-1000-8000-00805f9b34fb');
-      const characteristic = await service?.getCharacteristic('00002af1-0000-1000-8000-00805f9b34fb');
+      console.log("GATT Server connected");
+
+      // Robust service and characteristic discovery
+      let characteristic: any = null;
+      
+      for (const serviceUuid of PRINTER_SERVICES) {
+        try {
+          const service = await server?.getPrimaryService(serviceUuid);
+          if (service) {
+            for (const charUuid of PRINTER_CHARACTERISTICS) {
+              try {
+                characteristic = await service.getCharacteristic(charUuid);
+                if (characteristic) break;
+              } catch (e) { /* continue */ }
+            }
+          }
+          if (characteristic) break;
+        } catch (e) { /* continue */ }
+      }
+
+      if (!characteristic) {
+        // Fallback: try to find ANY writeable characteristic
+        const services = await server?.getPrimaryServices();
+        if (services) {
+          for (const service of services) {
+            const characteristics = await service.getCharacteristics();
+            characteristic = characteristics.find((c: any) => c.properties.write || c.properties.writeWithoutResponse);
+            if (characteristic) break;
+          }
+        }
+      }
+
+      if (!characteristic) throw new Error("No writable characteristic found on this printer.");
 
       const data = encodeEscPos(config);
+      // Send in MTU-safe chunks
       const chunkSize = 20;
       for (let i = 0; i < data.length; i += chunkSize) {
-        await characteristic?.writeValue(data.slice(i, i + chunkSize));
+        const chunk = data.slice(i, i + chunkSize);
+        if (characteristic.properties.writeWithoutResponse) {
+          await characteristic.writeValueWithoutResponse(chunk);
+        } else {
+          await characteristic.writeValue(chunk);
+        }
       }
-      alert("Print sent!");
-    } catch (e) {
-      alert("Printer offline or out of range. Please re-link.");
-      setConfig(p => ({ ...p, useBluetooth: false }));
+      
+      alert("Print sent successfully!");
+    } catch (e: any) {
+      console.error("Print error:", e);
+      alert(`Print Failed: ${e.message || "Unknown error"}. Ensure printer is paired and on.`);
     } finally {
       setLoading(false);
     }
@@ -167,7 +221,6 @@ const App: React.FC = () => {
 
   return (
     <div className="max-w-md mx-auto min-h-screen flex flex-col bg-slate-50 relative overflow-x-hidden shadow-2xl">
-      {/* App Bar */}
       <header className="bg-indigo-700 text-white p-6 sticky top-0 z-50 shadow-xl rounded-b-[2rem]">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -184,7 +237,6 @@ const App: React.FC = () => {
           </button>
         </div>
         
-        {/* Connection Status Badge */}
         <div className="mt-6 flex justify-center">
           <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${config.useBluetooth ? 'bg-emerald-500/20 text-emerald-100 border border-emerald-400/30' : 'bg-indigo-600/50 text-indigo-100'}`}>
             {config.useBluetooth ? (
@@ -197,7 +249,6 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 p-5 space-y-6 pb-40">
-        {/* Mode Toggle */}
         <div className="flex bg-white rounded-2xl p-1.5 shadow-sm border border-slate-200">
           <button onClick={() => setViewMode(ViewMode.EDIT)} className={`flex-1 py-3.5 text-xs font-black uppercase tracking-widest rounded-xl transition-all ${viewMode === ViewMode.EDIT ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-50'}`}>
             Design
@@ -209,8 +260,6 @@ const App: React.FC = () => {
 
         {viewMode === ViewMode.EDIT ? (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            
-            {/* Bluetooth Config */}
             <div className="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100">
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-2 text-indigo-700">
@@ -229,14 +278,13 @@ const App: React.FC = () => {
                     <div className="bg-indigo-600 p-2 rounded-xl text-white">
                       <RefreshCw className={`w-4 h-4 ${isConnecting ? 'animate-spin' : ''}`} />
                     </div>
-                    <span className="text-sm font-bold text-indigo-900">{config.linkedPrinterName || 'Pair New Printer'}</span>
+                    <span className="text-sm font-bold text-indigo-900 truncate max-w-[150px]">{config.linkedPrinterName || 'Pair New Printer'}</span>
                   </div>
                   <Settings className="w-4 h-4 text-indigo-400" />
                 </button>
               )}
             </div>
 
-            {/* Content & AI Tools */}
             <div className="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100 space-y-5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-indigo-700">
@@ -244,7 +292,6 @@ const App: React.FC = () => {
                   <h2 className="font-black uppercase text-[10px] tracking-widest">Receipt Body</h2>
                 </div>
                 <div className="flex gap-2">
-                  {/* Fixed: Moved await out of setConfig updater to avoid syntax error */}
                   <button onClick={async () => {
                     try {
                       const text = await navigator.clipboard.readText();
@@ -255,7 +302,6 @@ const App: React.FC = () => {
                   }} className="p-2 bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 transition-colors">
                     <Clipboard className="w-4 h-4" />
                   </button>
-                  {/* Fixed: Moved await out of setConfig updater to avoid syntax error */}
                   <button onClick={async () => { 
                     setLoading(true); 
                     try {
@@ -287,7 +333,6 @@ const App: React.FC = () => {
                   placeholder="Paste URL to extract..." 
                   className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none" 
                 />
-                {/* Fixed: Moved await out of setConfig updater to avoid syntax error */}
                 <button 
                   onClick={async () => { 
                     setLoading(true); 
@@ -307,7 +352,6 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Header Branding */}
             <div className="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100 space-y-4">
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Receipt Header</label>
               <input 
@@ -356,7 +400,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Floating Action Bar */}
       <footer className="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-slate-50 via-slate-50 to-transparent pointer-events-none z-40">
         <button 
           onClick={triggerPrint} 
