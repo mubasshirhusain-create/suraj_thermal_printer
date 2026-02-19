@@ -17,9 +17,9 @@ import {
 import { PrinterConfig, ViewMode } from './types';
 import { extractContentFromUrl, formatThermalText } from './services/geminiService';
 
-// Standard 58mm Thermal Printer UUIDs
+// Most common 58mm Thermal Printer GATT Service UUIDs
 const PRINTER_SERVICES = [
-  '000018f0-0000-1000-8000-00805f9b34fb',
+  '000018f0-0000-1000-8000-00805f9b34fb', // Very common
   '0000ff00-0000-1000-8000-00805f9b34fb',
   '49535343-fe7d-4ae5-8fa9-9fafd205e455',
   '0000ae30-0000-1000-8000-00805f9b34fb'
@@ -102,6 +102,9 @@ const App: React.FC = () => {
   const linkBluetooth = async () => {
     try {
       setIsConnecting(true);
+      if (!navigator.bluetooth) {
+        throw new Error("Bluetooth is not supported in this browser.");
+      }
       const device = await (navigator as any).bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: PRINTER_SERVICES
@@ -112,16 +115,15 @@ const App: React.FC = () => {
       setConfig(newConfig);
       handleSave(newConfig);
       alert(`Linked to ${device.name || 'Printer'}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Bluetooth link error:", error);
-      alert("Device pairing failed or canceled.");
+      alert(error.message || "Pairing canceled.");
     } finally {
       setIsConnecting(false);
     }
   };
 
   const handleBluetoothPrint = async () => {
-    // If we have no cached device or name, start pairing
     if (!btDevice && !config.linkedPrinterName) {
       linkBluetooth();
       return;
@@ -131,8 +133,8 @@ const App: React.FC = () => {
     try {
       let activeDevice = btDevice;
       
-      // Attempt to re-establish connection if device reference is lost or disconnected
-      if (!activeDevice || !activeDevice.gatt?.connected) {
+      // If we don't have a live reference, we MUST request it again to get a valid BluetoothDevice object
+      if (!activeDevice) {
         activeDevice = await (navigator as any).bluetooth.requestDevice({
           filters: config.linkedPrinterName ? [{ name: config.linkedPrinterName }] : undefined,
           acceptAllDevices: !config.linkedPrinterName,
@@ -143,29 +145,35 @@ const App: React.FC = () => {
 
       if (!activeDevice) throw new Error("Could not find printer.");
 
-      const server = await activeDevice.gatt?.connect();
+      // Attempt to connect with a timeout
+      const server = await Promise.race([
+        activeDevice.gatt?.connect(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Connection timed out")), 10000))
+      ]);
       
-      // CRITICAL: Give the printer a moment to stabilize after connection
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Stabilization delay for mobile
+      await new Promise(resolve => setTimeout(resolve, 800));
 
       let characteristic: any = null;
-      const services = await server?.getPrimaryServices();
       
-      if (services) {
-        for (const service of services) {
+      // Searching singular services is faster and more reliable thanplural discovery
+      for (const serviceUuid of PRINTER_SERVICES) {
+        try {
+          const service = await server.getPrimaryService(serviceUuid);
           const chars = await service.getCharacteristics();
-          // Find the first writable characteristic
-          characteristic = chars.find((c: any) => 
-            c.properties.write || c.properties.writeWithoutResponse
-          );
+          characteristic = chars.find((c: any) => c.properties.write || c.properties.writeWithoutResponse);
           if (characteristic) break;
+        } catch (e) {
+          continue; 
         }
       }
 
-      if (!characteristic) throw new Error("Printer interface not found. Ensure it's a 58mm Bluetooth Printer.");
+      if (!characteristic) {
+        throw new Error("Printer interface not found. Try pairing the device again.");
+      }
 
       const data = encodeEscPos(config);
-      const chunkSize = 20; 
+      const chunkSize = 20; // MTU safe chunk
       
       for (let i = 0; i < data.length; i += chunkSize) {
         const chunk = data.slice(i, i + chunkSize);
@@ -176,19 +184,19 @@ const App: React.FC = () => {
           await characteristic.writeValue(chunk);
         }
 
-        // Small delay between chunks to avoid GATT Operation Not Permitted (buffer overflow)
-        await new Promise(resolve => setTimeout(resolve, 45));
+        // Delay to prevent Android GATT congestion
+        await new Promise(resolve => setTimeout(resolve, 60));
       }
       
-      alert("Successfully printed!");
+      alert("Sent to printer!");
     } catch (e: any) {
-      console.error("Print logic error:", e);
-      // If "Connection attempt failed", clear device state so user can re-try pairing
-      if (e.message?.includes("Connection attempt failed")) {
+      console.error("Mobile Print Error:", e);
+      // Clear session if it's a connection issue so the user can re-prompt
+      if (e.message?.includes("Connection") || e.message?.includes("GATT")) {
         setBtDevice(null);
-        alert("Connection lost. Please tap 'Print' again to re-pair.");
+        alert("Printer connection lost. Please ensure printer is ON and try again.");
       } else {
-        alert(`Error: ${e.message || "Could not connect"}. Ensure printer is ON and close to your phone.`);
+        alert(`Error: ${e.message || "Connection failed"}`);
       }
     } finally {
       setLoading(false);
