@@ -2,12 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Printer, 
   Clipboard, 
-  Link as LinkIcon, 
-  Image as ImageIcon, 
   Settings, 
-  Trash2, 
   Sparkles,
-  Download,
   Save,
   CheckCircle2,
   FileText,
@@ -15,24 +11,18 @@ import {
   BluetoothConnected,
   BluetoothOff,
   RefreshCw,
-  ExternalLink
+  ExternalLink,
+  Image as ImageIcon
 } from 'lucide-react';
 import { PrinterConfig, ViewMode } from './types';
 import { extractContentFromUrl, formatThermalText } from './services/geminiService';
 
-// Common Thermal Printer UUIDs for 58mm units
+// Standard 58mm Thermal Printer UUIDs
 const PRINTER_SERVICES = [
   '000018f0-0000-1000-8000-00805f9b34fb',
   '0000ff00-0000-1000-8000-00805f9b34fb',
   '49535343-fe7d-4ae5-8fa9-9fafd205e455',
   '0000ae30-0000-1000-8000-00805f9b34fb'
-];
-
-const PRINTER_CHARACTERISTICS = [
-  '00002af1-0000-1000-8000-00805f9b34fb',
-  '0000ff01-0000-1000-8000-00805f9b34fb',
-  '49535343-8841-43f4-a8d4-ecbe34729bb3',
-  '0000ae01-0000-1000-8000-00805f9b34fb'
 ];
 
 const encodeEscPos = (config: PrinterConfig): Uint8Array => {
@@ -124,13 +114,14 @@ const App: React.FC = () => {
       alert(`Linked to ${device.name || 'Printer'}`);
     } catch (error) {
       console.error("Bluetooth link error:", error);
-      alert("Selection canceled or Bluetooth not available.");
+      alert("Device pairing failed or canceled.");
     } finally {
       setIsConnecting(false);
     }
   };
 
   const handleBluetoothPrint = async () => {
+    // If we have no cached device or name, start pairing
     if (!btDevice && !config.linkedPrinterName) {
       linkBluetooth();
       return;
@@ -140,6 +131,7 @@ const App: React.FC = () => {
     try {
       let activeDevice = btDevice;
       
+      // Attempt to re-establish connection if device reference is lost or disconnected
       if (!activeDevice || !activeDevice.gatt?.connected) {
         activeDevice = await (navigator as any).bluetooth.requestDevice({
           filters: config.linkedPrinterName ? [{ name: config.linkedPrinterName }] : undefined,
@@ -149,19 +141,20 @@ const App: React.FC = () => {
         setBtDevice(activeDevice);
       }
 
-      if (!activeDevice) throw new Error("No device active.");
+      if (!activeDevice) throw new Error("Could not find printer.");
 
       const server = await activeDevice.gatt?.connect();
-      console.log("Connected to GATT Server");
+      
+      // CRITICAL: Give the printer a moment to stabilize after connection
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       let characteristic: any = null;
-      
-      // Try discovery by known service UUIDs
       const services = await server?.getPrimaryServices();
+      
       if (services) {
         for (const service of services) {
           const chars = await service.getCharacteristics();
-          // Find the first writable characteristic (printers usually have one)
+          // Find the first writable characteristic
           characteristic = chars.find((c: any) => 
             c.properties.write || c.properties.writeWithoutResponse
           );
@@ -169,35 +162,34 @@ const App: React.FC = () => {
         }
       }
 
-      if (!characteristic) throw new Error("Printer interface not found. Ensure it is a 58mm Bluetooth Thermal Printer.");
+      if (!characteristic) throw new Error("Printer interface not found. Ensure it's a 58mm Bluetooth Printer.");
 
       const data = encodeEscPos(config);
-      // Small chunks are CRITICAL for thermal printers (MTU is usually 20-23 bytes)
       const chunkSize = 20; 
+      
       for (let i = 0; i < data.length; i += chunkSize) {
         const chunk = data.slice(i, i + chunkSize);
         
-        try {
-          // Use writeWithoutResponse if available (faster and often preferred by printers)
-          if (characteristic.properties.writeWithoutResponse) {
-            await characteristic.writeValueWithoutResponse(chunk);
-          } else {
-            await characteristic.writeValue(chunk);
-          }
-        } catch (writeError) {
-          // Fallback if primary method fails
+        if (characteristic.properties.writeWithoutResponse) {
+          await characteristic.writeValueWithoutResponse(chunk);
+        } else {
           await characteristic.writeValue(chunk);
         }
 
-        // Tiny delay between chunks helps avoid "GATT Operation Not Permitted" 
-        // which happens when the device's incoming buffer is full.
-        await new Promise(resolve => setTimeout(resolve, 35));
+        // Small delay between chunks to avoid GATT Operation Not Permitted (buffer overflow)
+        await new Promise(resolve => setTimeout(resolve, 45));
       }
       
-      alert("Sent to printer!");
+      alert("Successfully printed!");
     } catch (e: any) {
       console.error("Print logic error:", e);
-      alert(`Connection Error: ${e.message || "Unknown error"}. Try turning the printer off and on again.`);
+      // If "Connection attempt failed", clear device state so user can re-try pairing
+      if (e.message?.includes("Connection attempt failed")) {
+        setBtDevice(null);
+        alert("Connection lost. Please tap 'Print' again to re-pair.");
+      } else {
+        alert(`Error: ${e.message || "Could not connect"}. Ensure printer is ON and close to your phone.`);
+      }
     } finally {
       setLoading(false);
     }
